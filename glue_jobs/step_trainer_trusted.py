@@ -2,6 +2,7 @@ import sys
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
 
@@ -18,29 +19,59 @@ def main():
     )
 
     sc = SparkContext.getOrCreate()
-    glue_context = GlueContext(sc)
-    spark = glue_context.spark_session
-    job = Job(glue_context)
+    glueContext = GlueContext(sc)
+    spark = glueContext.spark_session
+    job = Job(glueContext)
     job.init(args["JOB_NAME"], args)
 
     step_landing = args["S3_STEP_TRAINER_LANDING"].rstrip("/") + "/"
     customers_curated = args["S3_CUSTOMERS_CURATED"].rstrip("/") + "/"
     step_trusted = args["S3_STEP_TRAINER_TRUSTED"].rstrip("/") + "/"
 
-    step_df = spark.read.option("multiline", "false").json(step_landing)
-    cust_df = spark.read.parquet(customers_curated)
+    # --- AWS S3 SOURCES ---
+    step_landing_dyf = glueContext.create_dynamic_frame.from_options(
+        connection_type="s3",
+        format="json",
+        format_options={"multiline": False},
+        connection_options={"paths": [step_landing], "recurse": True},
+        transformation_ctx="StepTrainerLanding_node",
+    )
 
-    # Step Trainer typically has "serialNumber"; customers have "serialNumber"
+    customers_curated_dyf = glueContext.create_dynamic_frame.from_options(
+        connection_type="s3",
+        format="parquet",
+        connection_options={"paths": [customers_curated], "recurse": True},
+        transformation_ctx="CustomersCurated_node",
+    )
+
+    step_df = step_landing_dyf.toDF()
+    cust_df = customers_curated_dyf.toDF()
+
+    # Join step trainer readings to only customers in curated set (by serialNumber)
     trusted_df = (
-        step_df.join(cust_df.select("serialNumber").dropDuplicates(), on="serialNumber", how="inner")
+        step_df.join(
+            cust_df.select("serialNumber").dropDuplicates(),
+            on="serialNumber",
+            how="inner",
+        )
         .filter(F.col("sensorReadingTime").isNotNull())
         .dropDuplicates(["serialNumber", "sensorReadingTime"])
     )
 
-    trusted_df.coalesce(1).write.mode("overwrite").parquet(step_trusted)
+    trusted_dyf = DynamicFrame.fromDF(trusted_df, glueContext, "StepTrainerTrusted_node")
+
+    # --- AWS S3 TARGET ---
+    glueContext.write_dynamic_frame.from_options(
+        frame=trusted_dyf,
+        connection_type="s3",
+        format="parquet",
+        connection_options={"path": step_trusted},
+        transformation_ctx="StepTrainerTrustedSink_node",
+    )
 
     job.commit()
 
 
 if __name__ == "__main__":
     main()
+
