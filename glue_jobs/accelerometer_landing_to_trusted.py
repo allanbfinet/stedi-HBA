@@ -2,6 +2,7 @@ import sys
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
 
@@ -18,32 +19,65 @@ def main():
     )
 
     sc = SparkContext.getOrCreate()
-    glue_context = GlueContext(sc)
-    spark = glue_context.spark_session
-    job = Job(glue_context)
+    glueContext = GlueContext(sc)
+    spark = glueContext.spark_session
+    job = Job(glueContext)
     job.init(args["JOB_NAME"], args)
 
     accel_landing = args["S3_ACCELEROMETER_LANDING"].rstrip("/") + "/"
     customer_trusted = args["S3_CUSTOMER_TRUSTED"].rstrip("/") + "/"
     accel_trusted = args["S3_ACCELEROMETER_TRUSTED"].rstrip("/") + "/"
 
-    accel_df = spark.read.option("multiline", "false").json(accel_landing)
-    cust_df = spark.read.parquet(customer_trusted)
+    # --- AWS S3 SOURCES ---
+    accel_landing_dyf = glueContext.create_dynamic_frame.from_options(
+        connection_type="s3",
+        format="json",
+        format_options={"multiline": False},
+        connection_options={"paths": [accel_landing], "recurse": True},
+        transformation_ctx="AccelerometerLanding_node",
+    )
 
-    # In STEDI: accelerometer uses column "user" (email). Customers use "email".
-    joined = accel_df.join(cust_df.select("email"), accel_df["user"] == cust_df["email"], "inner")
+    customer_trusted_dyf = glueContext.create_dynamic_frame.from_options(
+        connection_type="s3",
+        format="parquet",
+        connection_options={"paths": [customer_trusted], "recurse": True},
+        transformation_ctx="CustomerTrusted_node",
+    )
 
-    # Clean + dedupe
+    # Convert to DataFrames 
+    accel_df = accel_landing_dyf.toDF()
+    cust_df = customer_trusted_dyf.toDF()
+
+    
+    joined = accel_df.join(
+        cust_df.select("email"),
+        accel_df["user"] == cust_df["email"],
+        "inner",
+    )
+
     trusted_df = (
         joined.drop(cust_df["email"])
         .filter(F.col("user").isNotNull())
         .dropDuplicates(["user", "timestamp"])
     )
 
-    trusted_df.coalesce(1).write.mode("overwrite").parquet(accel_trusted)
+    # DynamicFrame for Glue sink
+    accel_trusted_dyf = DynamicFrame.fromDF(
+        trusted_df, glueContext, "AccelerometerTrusted_node"
+    )
+
+    # --- AWS S3 TARGET ---
+    glueContext.write_dynamic_frame.from_options(
+        frame=accel_trusted_dyf,
+        connection_type="s3",
+        format="parquet",
+        connection_options={"path": accel_trusted},
+        transformation_ctx="AccelerometerTrustedSink_node",
+    )
 
     job.commit()
 
 
 if __name__ == "__main__":
     main()
+
