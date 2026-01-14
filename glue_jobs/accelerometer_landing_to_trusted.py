@@ -44,11 +44,11 @@ def main():
         transformation_ctx="CustomerTrusted_node",
     )
 
-    # Convert to DataFrames 
+    # Convert to DataFrames for join logic
     accel_df = accel_landing_dyf.toDF()
     cust_df = customer_trusted_dyf.toDF()
 
-    
+    # Join: accelerometer.user (email) == customer.email
     joined = accel_df.join(
         cust_df.select("email"),
         accel_df["user"] == cust_df["email"],

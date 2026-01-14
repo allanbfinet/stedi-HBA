@@ -35,21 +35,29 @@ def main():
         transformation_ctx="CustomerLanding_node",
     )
 
-    # Convert to Spark DataFrame
+    # Convert to Spark DataFrame for your existing logic
     df = customer_landing_dyf.toDF()
 
-
+    # transformed logic
     df_trusted = (
         df.filter(F.col("shareWithResearchAsOfDate").isNotNull())
         .dropDuplicates(["email"])
     )
 
+<<<<<<< HEAD
     # DynamicFrame for Glue sink
+=======
+    # Convert to DynamicFrame for Glue sink
+>>>>>>> d57cc7c (Update Glue scripts to use S3 DynmicFrame sources)
     customer_trusted_dyf = DynamicFrame.fromDF(
         df_trusted, glueContext, "CustomerTrusted_node"
     )
 
+<<<<<<< HEAD
     # AWS S3 TARGET
+=======
+    # --- AWS S3 TARGET ---
+>>>>>>> d57cc7c (Update Glue scripts to use S3 DynmicFrame sources)
     glueContext.write_dynamic_frame.from_options(
         frame=customer_trusted_dyf,
         connection_type="s3",

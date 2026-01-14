@@ -56,7 +56,7 @@ def main():
     step_df = step_dyf.toDF()
     cust_df = cust_dyf.toDF()
 
-    # Step trainer 
+    # Step trainer -> attach user (email) by serialNumber using customers_curated
     step_with_user = (
         step_df.join(
             cust_df.select("email", "serialNumber"),
@@ -66,7 +66,11 @@ def main():
         .withColumnRenamed("email", "user")
     )
 
+<<<<<<< HEAD
     # Join step trainer readings to accelerometer at same timestamp for same user
+=======
+    # Join step trainer readings to accelerometer
+>>>>>>> d57cc7c (Update Glue scripts to use S3 DynmicFrame sources)
     joined = step_with_user.join(
         accel_df,
         (step_with_user["user"] == accel_df["user"])
