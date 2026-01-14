@@ -4,7 +4,6 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
-from pyspark.sql import functions as F
 
 
 def main():
@@ -32,7 +31,7 @@ def main():
     step_landing_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
         format="json",
-        format_options={"multiline": False},
+        format_options={"multiLine": "false"},
         connection_options={"paths": [step_landing], "recurse": True},
         transformation_ctx="StepTrainerLanding_node",
     )
@@ -47,15 +46,11 @@ def main():
     step_df = step_landing_dyf.toDF()
     cust_df = customers_curated_dyf.toDF()
 
-    # Join step trainer readings to only customers in curated set (by serialNumber)
+    curated_serials = cust_df.select("serialNumber").dropDuplicates()
+
     trusted_df = (
-        step_df.join(
-            cust_df.select("serialNumber").dropDuplicates(),
-            on="serialNumber",
-            how="inner",
-        )
-        .filter(F.col("sensorReadingTime").isNotNull())
-        .dropDuplicates(["serialNumber", "sensorReadingTime"])
+        step_df.join(curated_serials, on="serialNumber", how="inner")
+        .select(step_df["*"])  # keep only step trainer columns
     )
 
     trusted_dyf = DynamicFrame.fromDF(trusted_df, glueContext, "StepTrainerTrusted_node")
@@ -74,4 +69,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

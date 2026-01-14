@@ -4,7 +4,6 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
-from pyspark.sql import functions as F
 
 
 def main():
@@ -28,11 +27,11 @@ def main():
     customer_trusted = args["S3_CUSTOMER_TRUSTED"].rstrip("/") + "/"
     accel_trusted = args["S3_ACCELEROMETER_TRUSTED"].rstrip("/") + "/"
 
-    # --- AWS S3 SOURCES ---
+    # AWS S3 SOURCES
     accel_landing_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
         format="json",
-        format_options={"multiline": False},
+        format_options={"multiLine": "false"},
         connection_options={"paths": [accel_landing], "recurse": True},
         transformation_ctx="AccelerometerLanding_node",
     )
@@ -48,25 +47,19 @@ def main():
     accel_df = accel_landing_dyf.toDF()
     cust_df = customer_trusted_dyf.toDF()
 
-    # Join: accelerometer.user (email) == customer.email
-    joined = accel_df.join(
-        cust_df.select("email"),
-        accel_df["user"] == cust_df["email"],
-        "inner",
+    # Filter accelerometer readings to ONLY customers in customer_trusted 
+    filtered_df = (
+        accel_df.join(cust_df.select("email"), accel_df["user"] == cust_df["email"], "inner")
+        .select(accel_df["*"])  # keep only accelerometer columns
     )
 
-    trusted_df = (
-        joined.drop(cust_df["email"])
-        .filter(F.col("user").isNotNull())
-        .dropDuplicates(["user", "timestamp"])
-    )
-
-    # DynamicFrame for Glue sink
+    # Back to DynamicFrame for Glue sink
     accel_trusted_dyf = DynamicFrame.fromDF(
-        trusted_df, glueContext, "AccelerometerTrusted_node"
+        filtered_df, glueContext, "AccelerometerTrusted_node"
     )
 
-    # --- AWS S3 TARGET ---
+    
+    # AWS S3 TARGET
     glueContext.write_dynamic_frame.from_options(
         frame=accel_trusted_dyf,
         connection_type="s3",

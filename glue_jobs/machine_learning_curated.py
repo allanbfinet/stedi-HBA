@@ -56,7 +56,11 @@ def main():
     step_df = step_dyf.toDF()
     cust_df = cust_dyf.toDF()
 
-    # Step trainer -> attach user (email) by serialNumber using customers_curated
+    # Ensure timestamps have the same type for joining 
+    accel_df = accel_df.withColumn("timestamp_long", F.col("timestamp").cast("long"))
+    step_df = step_df.withColumn("sensorReadingTime_long", F.col("sensorReadingTime").cast("long"))
+
+    # Attach user (email) to step trainer rows using customers_curated mapping
     step_with_user = (
         step_df.join(
             cust_df.select("email", "serialNumber"),
@@ -66,30 +70,22 @@ def main():
         .withColumnRenamed("email", "user")
     )
 
-<<<<<<< HEAD
-    # Join step trainer readings to accelerometer at same timestamp for same user
-=======
-    # Join step trainer readings to accelerometer
->>>>>>> d57cc7c (Update Glue scripts to use S3 DynmicFrame sources)
+    # Join on user + matching timestamp
     joined = step_with_user.join(
         accel_df,
         (step_with_user["user"] == accel_df["user"])
-        & (step_with_user["sensorReadingTime"] == accel_df["timestamp"]),
+        & (step_with_user["sensorReadingTime_long"] == accel_df["timestamp_long"]),
         "inner",
     )
 
-    ml_df = (
-        joined.select(
-            step_with_user["user"].alias("user"),
-            step_with_user["serialNumber"].alias("serialNumber"),
-            step_with_user["sensorReadingTime"].alias("sensorReadingTime"),
-            accel_df["x"].alias("x"),
-            accel_df["y"].alias("y"),
-            accel_df["z"].alias("z"),
-            step_with_user["distanceFromObject"].alias("distanceFromObject"),
-        )
-        .filter(F.col("user").isNotNull())
-        .dropDuplicates(["user", "sensorReadingTime"])
+    ml_df = joined.select(
+        step_with_user["user"].alias("user"),
+        step_with_user["serialNumber"].alias("serialNumber"),
+        step_with_user["sensorReadingTime"].alias("sensorReadingTime"),
+        accel_df["x"].alias("x"),
+        accel_df["y"].alias("y"),
+        accel_df["z"].alias("z"),
+        step_with_user["distanceFromObject"].alias("distanceFromObject"),
     )
 
     ml_dyf = DynamicFrame.fromDF(ml_df, glueContext, "MachineLearningCurated_node")
@@ -108,4 +104,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

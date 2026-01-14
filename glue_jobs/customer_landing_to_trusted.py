@@ -30,7 +30,7 @@ def main():
     customer_landing_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
         format="json",
-        format_options={"multiline": False},
+        format_options={"multiline": "false"},
         connection_options={"paths": [landing_path], "recurse": True},
         transformation_ctx="CustomerLanding_node",
     )
@@ -41,23 +41,14 @@ def main():
     # transformed logic
     df_trusted = (
         df.filter(F.col("shareWithResearchAsOfDate").isNotNull())
-        .dropDuplicates(["email"])
     )
 
-<<<<<<< HEAD
-    # DynamicFrame for Glue sink
-=======
     # Convert to DynamicFrame for Glue sink
->>>>>>> d57cc7c (Update Glue scripts to use S3 DynmicFrame sources)
     customer_trusted_dyf = DynamicFrame.fromDF(
         df_trusted, glueContext, "CustomerTrusted_node"
     )
 
-<<<<<<< HEAD
-    # AWS S3 TARGET
-=======
     # --- AWS S3 TARGET ---
->>>>>>> d57cc7c (Update Glue scripts to use S3 DynmicFrame sources)
     glueContext.write_dynamic_frame.from_options(
         frame=customer_trusted_dyf,
         connection_type="s3",
