@@ -6,6 +6,11 @@ from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
 
 
+# Glue
+GLUE_DATABASE = "stedi"
+GLUE_TABLE = "step_trainer_trusted"
+
+
 def main():
     args = getResolvedOptions(
         sys.argv,
@@ -19,7 +24,6 @@ def main():
 
     sc = SparkContext.getOrCreate()
     glueContext = GlueContext(sc)
-    spark = glueContext.spark_session
     job = Job(glueContext)
     job.init(args["JOB_NAME"], args)
 
@@ -27,11 +31,11 @@ def main():
     customers_curated = args["S3_CUSTOMERS_CURATED"].rstrip("/") + "/"
     step_trusted = args["S3_STEP_TRAINER_TRUSTED"].rstrip("/") + "/"
 
-    # --- AWS S3 SOURCES ---
+    # --- SOURCES ---
     step_landing_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
         format="json",
-        format_options={"multiLine": "false"},
+        format_options={"multiLine": False},  # ✅ boolean
         connection_options={"paths": [step_landing], "recurse": True},
         transformation_ctx="StepTrainerLanding_node",
     )
@@ -46,23 +50,27 @@ def main():
     step_df = step_landing_dyf.toDF()
     cust_df = customers_curated_dyf.toDF()
 
-    curated_serials = cust_df.select("serialNumber").dropDuplicates()
+    curated_serials = cust_df.select("serialNumber").dropDuplicates(["serialNumber"])
 
     trusted_df = (
         step_df.join(curated_serials, on="serialNumber", how="inner")
-        .select(step_df["*"])  # keep only step trainer columns
+        .select(step_df["*"])
     )
 
     trusted_dyf = DynamicFrame.fromDF(trusted_df, glueContext, "StepTrainerTrusted_node")
 
-    # --- AWS S3 TARGET ---
-    glueContext.write_dynamic_frame.from_options(
-        frame=trusted_dyf,
+    # --- TARGET ---
+    sink = glueContext.getSink(
         connection_type="s3",
-        format="parquet",
-        connection_options={"path": step_trusted},
+        path=step_trusted,
+        enableUpdateCatalog=True,
+        updateBehavior="UPDATE_IN_DATABASE",
+        partitionKeys=[],
         transformation_ctx="StepTrainerTrustedSink_node",
     )
+    sink.setCatalogInfo(catalogDatabase=GLUE_DATABASE, catalogTableName=GLUE_TABLE)
+    sink.setFormat("glueparquet", compression="snappy")
+    sink.writeFrame(trusted_dyf)
 
     job.commit()
 
