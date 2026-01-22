@@ -6,6 +6,11 @@ from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
 
 
+# Glue database/table names
+GLUE_DATABASE = "stedi"
+GLUE_TABLE = "customers_curated"
+
+
 def main():
     args = getResolvedOptions(
         sys.argv,
@@ -29,9 +34,7 @@ def main():
     step_trainer_landing = args["S3_STEP_TRAINER_LANDING"].rstrip("/") + "/"
     customers_curated = args["S3_CUSTOMERS_CURATED"].rstrip("/") + "/"
 
-    # ---------------
-    # AWS S3 SOURCES 
-    # ---------------
+    # --- SOURCES ---
     customer_trusted_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
         format="parquet",
@@ -49,7 +52,7 @@ def main():
     step_trainer_landing_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
         format="json",
-        format_options={"multiLine": "false"},
+        format_options={"multiLine": False},  
         connection_options={"paths": [step_trainer_landing], "recurse": True},
         transformation_ctx="StepTrainerLanding_node",
     )
@@ -58,36 +61,36 @@ def main():
     accel_df = accelerometer_trusted_dyf.toDF()
     step_df = step_trainer_landing_dyf.toDF()
 
-    # Distinct accelerometer users (emails)
-    accel_users_df = accel_df.select("user").dropDuplicates()
+    # Distinct accelerometer users
+    accel_users_df = accel_df.select("user").dropDuplicates(["user"])
 
-    # Distinct step trainer serial numbers 
-    step_serials_df = step_df.select("serialNumber").dropDuplicates()
-
-    # customers_curated:
+    # Distinct step trainer serial numbers
+    step_serials_df = step_df.select("serialNumber").dropDuplicates(["serialNumber"])
 
     curated_df = (
         cust_df.join(accel_users_df, cust_df["email"] == accel_users_df["user"], "inner")
         .drop(accel_users_df["user"])
         .join(step_serials_df, on="serialNumber", how="inner")
+        .dropDuplicates(["email"]) 
     )
 
     curated_dyf = DynamicFrame.fromDF(curated_df, glueContext, "CustomersCurated_node")
 
-    # --------------
-    # AWS S3 TARGET
-    # --------------
-    glueContext.write_dynamic_frame.from_options(
-        frame=curated_dyf,
+    # --- TARGET ---
+    sink = glueContext.getSink(
         connection_type="s3",
-        format="parquet",
-        connection_options={"path": customers_curated},
+        path=customers_curated,
+        enableUpdateCatalog=True,
+        updateBehavior="UPDATE_IN_DATABASE",
+        partitionKeys=[],
         transformation_ctx="CustomersCuratedSink_node",
     )
+    sink.setCatalogInfo(catalogDatabase=GLUE_DATABASE, catalogTableName=GLUE_TABLE)
+    sink.setFormat("glueparquet", compression="snappy")
+    sink.writeFrame(curated_dyf)
 
     job.commit()
 
 
 if __name__ == "__main__":
     main()
-
