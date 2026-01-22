@@ -7,6 +7,11 @@ from pyspark.context import SparkContext
 from pyspark.sql import functions as F
 
 
+# Glue
+GLUE_DATABASE = "stedi"
+GLUE_TABLE = "machine_learning_curated"
+
+
 def main():
     args = getResolvedOptions(
         sys.argv,
@@ -14,7 +19,6 @@ def main():
             "JOB_NAME",
             "S3_ACCELEROMETER_TRUSTED",
             "S3_STEP_TRAINER_TRUSTED",
-            "S3_CUSTOMERS_CURATED",
             "S3_MACHINE_LEARNING_CURATED",
         ],
     )
@@ -27,10 +31,9 @@ def main():
 
     accel_trusted = args["S3_ACCELEROMETER_TRUSTED"].rstrip("/") + "/"
     step_trusted = args["S3_STEP_TRAINER_TRUSTED"].rstrip("/") + "/"
-    customers_curated = args["S3_CUSTOMERS_CURATED"].rstrip("/") + "/"
     ml_curated = args["S3_MACHINE_LEARNING_CURATED"].rstrip("/") + "/"
 
-    # --- AWS S3 SOURCES ---
+    # --- SOURCES ---
     accel_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
         format="parquet",
@@ -45,59 +48,47 @@ def main():
         transformation_ctx="StepTrainerTrusted_node",
     )
 
-    cust_dyf = glueContext.create_dynamic_frame.from_options(
-        connection_type="s3",
-        format="parquet",
-        connection_options={"paths": [customers_curated], "recurse": True},
-        transformation_ctx="CustomersCurated_node",
-    )
+    acc = accel_dyf.toDF()
+    st = step_dyf.toDF()
 
-    accel_df = accel_dyf.toDF()
-    step_df = step_dyf.toDF()
-    cust_df = cust_dyf.toDF()
+    # Ensure join keys are same type
+    acc = acc.withColumn("timestamp_long", F.col("timestamp").cast("long"))
+    st = st.withColumn("sensorReadingTime_long", F.col("sensorReadingTime").cast("long"))
 
-    # Ensure timestamps have the same type for joining 
-    accel_df = accel_df.withColumn("timestamp_long", F.col("timestamp").cast("long"))
-    step_df = step_df.withColumn("sensorReadingTime_long", F.col("sensorReadingTime").cast("long"))
-
-    # Attach user (email) to step trainer rows using customers_curated mapping
-    step_with_user = (
-        step_df.join(
-            cust_df.select("email", "serialNumber"),
-            on="serialNumber",
-            how="inner",
-        )
-        .withColumnRenamed("email", "user")
-    )
-
-    # Join on user + matching timestamp
-    joined = step_with_user.join(
-        accel_df,
-        (step_with_user["user"] == accel_df["user"])
-        & (step_with_user["sensorReadingTime_long"] == accel_df["timestamp_long"]),
+    # Join 
+    joined = acc.join(
+        st,
+        acc["timestamp_long"] == st["sensorReadingTime_long"],
         "inner",
     )
 
+    # Select ML training columns
     ml_df = joined.select(
-        step_with_user["user"].alias("user"),
-        step_with_user["serialNumber"].alias("serialNumber"),
-        step_with_user["sensorReadingTime"].alias("sensorReadingTime"),
-        accel_df["x"].alias("x"),
-        accel_df["y"].alias("y"),
-        accel_df["z"].alias("z"),
-        step_with_user["distanceFromObject"].alias("distanceFromObject"),
+        acc["user"].alias("user"),
+        acc["timestamp"].cast("long").alias("timestamp"),
+        acc["x"].alias("x"),
+        acc["y"].alias("y"),
+        acc["z"].alias("z"),
+        st["sensorReadingTime"].cast("long").alias("sensorReadingTime"),
+        st["distanceFromObject"].alias("distanceFromObject"),
+    ).dropDuplicates(
+        ["user", "timestamp", "x", "y", "z", "sensorReadingTime", "distanceFromObject"]
     )
 
     ml_dyf = DynamicFrame.fromDF(ml_df, glueContext, "MachineLearningCurated_node")
 
-    # --- AWS S3 TARGET ---
-    glueContext.write_dynamic_frame.from_options(
-        frame=ml_dyf,
+    # --- TARGET ---
+    sink = glueContext.getSink(
         connection_type="s3",
-        format="parquet",
-        connection_options={"path": ml_curated},
+        path=ml_curated,
+        enableUpdateCatalog=True,
+        updateBehavior="UPDATE_IN_DATABASE",
+        partitionKeys=[],
         transformation_ctx="MachineLearningCuratedSink_node",
     )
+    sink.setCatalogInfo(catalogDatabase=GLUE_DATABASE, catalogTableName=GLUE_TABLE)
+    sink.setFormat("glueparquet", compression="snappy")
+    sink.writeFrame(ml_dyf)
 
     job.commit()
 
