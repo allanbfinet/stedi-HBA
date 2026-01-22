@@ -6,6 +6,11 @@ from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
 
 
+# Glue
+GLUE_DATABASE = "stedi"
+GLUE_TABLE = "accelerometer_trusted"
+
+
 def main():
     args = getResolvedOptions(
         sys.argv,
@@ -27,11 +32,11 @@ def main():
     customer_trusted = args["S3_CUSTOMER_TRUSTED"].rstrip("/") + "/"
     accel_trusted = args["S3_ACCELEROMETER_TRUSTED"].rstrip("/") + "/"
 
-    # AWS S3 SOURCES
+    # ---------- SOURCES ----------
     accel_landing_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
         format="json",
-        format_options={"multiLine": "false"},
+        format_options={"multiLine": False},   
         connection_options={"paths": [accel_landing], "recurse": True},
         transformation_ctx="AccelerometerLanding_node",
     )
@@ -43,34 +48,50 @@ def main():
         transformation_ctx="CustomerTrusted_node",
     )
 
-    # Convert to DataFrames for join logic
+    # ---------- TRANSFORM ----------
     accel_df = accel_landing_dyf.toDF()
     cust_df = customer_trusted_dyf.toDF()
 
-    # Filter accelerometer readings to ONLY customers in customer_trusted 
+    
+    cust_emails_df = cust_df.select("email").dropDuplicates(["email"])
+
     filtered_df = (
-        accel_df.join(cust_df.select("email"), accel_df["user"] == cust_df["email"], "inner")
-        .select(accel_df["*"])  # keep only accelerometer columns
+        accel_df.join(
+            cust_emails_df,
+            accel_df["user"] == cust_emails_df["email"],
+            "inner"
+        )
+        .select(accel_df["*"])
+        
     )
 
-    # Back to DynamicFrame for Glue sink
     accel_trusted_dyf = DynamicFrame.fromDF(
         filtered_df, glueContext, "AccelerometerTrusted_node"
     )
 
-    
-    # AWS S3 TARGET
-    glueContext.write_dynamic_frame.from_options(
-        frame=accel_trusted_dyf,
+    # ---------- TARGET ----------
+    sink = glueContext.getSink(
         connection_type="s3",
-        format="parquet",
-        connection_options={"path": accel_trusted},
+        path=accel_trusted,
+        enableUpdateCatalog=True,               
+        updateBehavior="UPDATE_IN_DATABASE",    
+        partitionKeys=[],                       
         transformation_ctx="AccelerometerTrustedSink_node",
     )
+
+
+    sink.setFormat("glueparquet")
+
+    # Data Catalog table to create/update
+    sink.setCatalogInfo(
+        catalogDatabase=GLUE_DATABASE,
+        catalogTableName=GLUE_TABLE
+    )
+
+    sink.writeFrame(accel_trusted_dyf)
 
     job.commit()
 
 
 if __name__ == "__main__":
     main()
-
