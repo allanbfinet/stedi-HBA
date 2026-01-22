@@ -7,6 +7,11 @@ from pyspark.context import SparkContext
 from pyspark.sql import functions as F
 
 
+# Glue
+GLUE_DATABASE = "stedi"
+GLUE_TABLE = "customer_trusted"
+
+
 def main():
     args = getResolvedOptions(
         sys.argv,
@@ -14,8 +19,6 @@ def main():
             "JOB_NAME",
             "S3_CUSTOMER_LANDING",
             "S3_CUSTOMER_TRUSTED",
-            "GLUE_DATABASE",
-            "GLUE_TABLE",
         ],
     )
 
@@ -27,9 +30,6 @@ def main():
     landing_path = args["S3_CUSTOMER_LANDING"].rstrip("/") + "/"
     trusted_path = args["S3_CUSTOMER_TRUSTED"].rstrip("/") + "/"
 
-    glue_db = args.get("GLUE_DATABASE", "stedi")
-    glue_table = args.get("GLUE_TABLE", "customer_trusted")
-
     # --- AWS S3 SOURCE ---
     customer_landing_dyf = glueContext.create_dynamic_frame.from_options(
         connection_type="s3",
@@ -39,17 +39,16 @@ def main():
         transformation_ctx="CustomerLanding_node",
     )
 
-    # Convert to Spark DataFrame for your existing logic
+    # DataFrame
     df = customer_landing_dyf.toDF()
-
+    
     df_trusted = df.filter(F.col("shareWithResearchAsOfDate").isNotNull())
 
-    
     customer_trusted_dyf = DynamicFrame.fromDF(
         df_trusted, glueContext, "CustomerTrusted_node"
     )
 
-    # --- AWS S3 TARGET ---
+    # --- AWS S3 TARGET  ---
     sink = glueContext.getSink(
         path=trusted_path,
         connection_type="s3",
@@ -58,7 +57,10 @@ def main():
         enableUpdateCatalog=True,
         transformation_ctx="CustomerTrustedSink_node",
     )
-    sink.setCatalogInfo(catalogDatabase=glue_db, catalogTableName=glue_table)
+    sink.setCatalogInfo(
+        catalogDatabase=GLUE_DATABASE,
+        catalogTableName=GLUE_TABLE
+    )
     sink.setFormat("glueparquet", compression="snappy")
     sink.writeFrame(customer_trusted_dyf)
 
